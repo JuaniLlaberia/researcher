@@ -10,5 +10,6 @@ class Session(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     research_id = Column(UUID(as_uuid=True), ForeignKey("researchs.id"), nullable=False)
     summary = Column(String, nullable=True)
+    hitl_mode = Column(String, nullable=False, default="checkpoint")
     created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
