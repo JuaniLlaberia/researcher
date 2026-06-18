@@ -14,7 +14,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv(override=False)
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -40,11 +39,19 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     google_gemini_key: str = ""
 
+    # --- External paper sources (optional; raise rate limits when set) ---
+    semantic_scholar_api_key: str = ""
+
     # --- Embedder ---
     embedder_provider: str = ""
     embedder_model: str = ""
     # Output dimension of the chosen embedder. MUST match the Vector(N) column on PaperChunk
     embedding_dim: int = 768
+
+    # --- Reranker (cross-encoder, HuggingFace) ---
+    reranker_model: str = "BAAI/bge-reranker-base"
+    # Leave empty to auto-detect.
+    reranker_device: str = ""
 
     @computed_field
     @property
