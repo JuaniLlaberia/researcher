@@ -1,8 +1,9 @@
 import ssl
 import urllib.request
-
 import certifi
+from langchain_core.tools import tool
 
+@tool
 def download_paper(url: str) -> bytes:
     """
     Downloads a research paper PDF from a given URL into memory.
