@@ -46,8 +46,8 @@ class Embedder:
             from langchain_openai import OpenAIEmbeddings
             return OpenAIEmbeddings(model=model)
         elif provider == "google":
-            if not os.getenv("GOOGLE_GEMINI_KEY"):
-                raise ValueError("Missing GOOGLE_GEMINI_KEY env variable.")
+            if not os.getenv("GEMINI_API_KEY"):
+                raise ValueError("Missing GEMINI_API_KEY env variable.")
 
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
             return GoogleGenerativeAIEmbeddings(model=model)

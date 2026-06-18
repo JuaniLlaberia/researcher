@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # --- Provider API keys (only the selected provider's key is required) ---
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    google_gemini_key: str = ""
+    gemini_api_key: str = ""
 
     # --- External paper sources (optional; raise rate limits when set) ---
     semantic_scholar_api_key: str = ""

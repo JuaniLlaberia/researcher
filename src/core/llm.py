@@ -67,8 +67,8 @@ class LLM:
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(model=model, temperature=temperature, timeout=self.timeout, max_retries=self.max_retries)
         elif provider == "google":
-            if not os.getenv("GOOGLE_GEMINI_KEY"):
-                raise ValueError("Missing GOOGLE_GEMINI_KEY env variable.")
+            if not os.getenv("GEMINI_API_KEY"):
+                raise ValueError("Missing GEMINI_API_KEY env variable.")
 
             from langchain_google_genai import ChatGoogleGenerativeAI
             return ChatGoogleGenerativeAI(model=model, temperature=temperature, timeout=self.timeout, max_retries=self.max_retries)
