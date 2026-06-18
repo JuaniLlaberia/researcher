@@ -1,7 +1,8 @@
 import io
 
-from docling.document_converter import DocumentConverter
-from docling.datamodel.base_models import DocumentStream
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 class DocumentProcessor:
     """
@@ -9,7 +10,17 @@ class DocumentProcessor:
     preserving sections, tables and figures. No file on disk is required.
     """
     def __init__(self) -> None:
-        self.converter = DocumentConverter()
+        """
+        Initializes the DocumentProcessor pipeline.
+        """
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = False
+
+        self.converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
 
     def process_document(self, pdf_bytes: bytes, name: str = "paper.pdf") -> str:
         """

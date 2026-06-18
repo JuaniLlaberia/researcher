@@ -147,7 +147,32 @@ class LiteratureReviewer:
         self._ingest_selected(selected)
         evidence = self._retrieve(main_query, queries)
 
-        return {"raw_data": evidence}
+        merged = self._merge_evidence(state.get("raw_data") or [], evidence)
+        return {"raw_data": merged}
+
+    def _merge_evidence(self, existing: List[EvidenceItem], new: List[EvidenceItem]) -> List[EvidenceItem]:
+        """
+        Merge newly retrieved evidence into the evidence accumulated so far,
+        deduplicating by chunk_id (falling back to (paper_id, text) when a chunk
+        id is unavailable). Existing items are preserved; duplicates are dropped.
+
+        Args:
+            existing (List[EvidenceItem]): Evidence already in state.
+            new (List[EvidenceItem]): Evidence from the latest retrieval.
+        Returns:
+            List[EvidenceItem]: Deduplicated union of both lists.
+        """
+        def key(item: EvidenceItem):
+            return item.chunk_id or (item.paper_id, item.text)
+
+        merged = list(existing)
+        seen = {key(item) for item in existing}
+        for item in new:
+            k = key(item)
+            if k not in seen:
+                seen.add(k)
+                merged.append(item)
+        return merged
 
     def _discover(self, main_query: str, queries: List[str]) -> List[Dict[str, Any]]:
         """
@@ -168,7 +193,7 @@ class LiteratureReviewer:
                 (search_schoolar, {"query": term, "max_results": 5}),
             ):
                 try:
-                    results = tool.invoke(kwargs)
+                    results = tool(**kwargs)
                 except Exception:
                     continue
                 for r in results:
@@ -256,6 +281,7 @@ class LiteratureReviewer:
         return [
             EvidenceItem(
                 source_type="vector_db",
+                chunk_id=r.get("id"),
                 title=r["metadata"].get("title"),
                 url=r["metadata"].get("url"),
                 text=r["text"],

@@ -30,7 +30,7 @@ Research Goal:
 Hypothesis Under Investigation:
 {hypothesis}
 
-Feedback From a Previous Attempt (may be empty on the first try):
+Candidate Papers (each with its index, title, and abstract):
 {candidates}
 
 Return selected_indices: the list of `index` values of the papers you chose.
@@ -52,7 +52,7 @@ Research Goal:
 Hypothesis Under Investigation:
 {hypothesis}
 
-Feedback From a Previous Attempt (may be empty on the first try):
+Evidence Gathered So Far:
 {raw_data}
 """)
 
@@ -72,6 +72,6 @@ Research Goal:
 Hypothesis Under Investigation:
 {hypothesis}
 
-Feedback From a Previous Attempt (may be empty on the first try):
+Evidence Gathered So Far:
 {raw_data}
 """)

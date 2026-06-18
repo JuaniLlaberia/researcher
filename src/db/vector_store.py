@@ -263,5 +263,4 @@ class VectorStore:
                 "score": float(score),
             }
             for doc_id, score in reranked[:top_k]
-            if score > 0
         ]
