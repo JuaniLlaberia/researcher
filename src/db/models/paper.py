@@ -2,14 +2,16 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Column,
+    Computed,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, ARRAY, TSVECTOR
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
@@ -42,9 +44,15 @@ class PaperChunk(Base):
     content = Column(Text, nullable=False)
     section = Column(String, nullable=True)
     embedding = Column(Vector(settings.embedding_dim), nullable=False)
-    
+
+    content_tsv = Column(
+        TSVECTOR,
+        Computed("to_tsvector('english', content)", persisted=True),
+    )
+
     paper = relationship("Paper", back_populates="chunks")
 
     __table_args__ = (
         UniqueConstraint("paper_id", "chunk_index", name="uq_chunk_paper_index"),
+        Index("ix_paper_chunks_content_tsv", "content_tsv", postgresql_using="gin"),
     )
