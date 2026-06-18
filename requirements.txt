@@ -22,3 +22,8 @@ certifi
 
 # Graphs
 langgraph
+langchain
+
+# Reranking
+torch
+transformers
