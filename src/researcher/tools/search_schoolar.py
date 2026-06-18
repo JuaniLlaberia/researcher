@@ -1,7 +1,6 @@
 import time
 import requests
 from typing import Any, Dict, List, Optional
-from langchain_core.tools import tool
 
 from src.core.config import settings
 
@@ -50,7 +49,6 @@ def _resolve_pdf_url(paper: Dict[str, Any]) -> Optional[str]:
 
     return None
 
-@tool
 def search_schoolar(query: str, max_results: int = 5, open_access_only: bool = False) -> List[Dict[str, Any]]:
     """
     Search Semantic Scholar by keyword relevance. Returns paper metadata

@@ -2,7 +2,6 @@ import re
 import requests
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any
-from langchain_core.tools import tool
 
 ARXIV_API = "http://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
@@ -19,7 +18,6 @@ def _arxiv_id(abstract_url: str) -> str:
     raw = abstract_url.rsplit("/", 1)[-1]
     return re.sub(r"v\d+$", "", raw)
 
-@tool
 def search_arxiv(
     title: str = "",
     author: str = "",

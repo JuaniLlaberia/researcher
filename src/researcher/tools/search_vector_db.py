@@ -1,9 +1,7 @@
 from typing import List, Dict, Any
-from langchain_core.tools import tool
 
 from src.db.vector_store import VectorStore
 
-@tool
 def serach_vector_db(main_query: str, queries: List[str]) -> List[Dict[str, Any]]:
     """
     Search in vector db using a main_query and query variants (queries).
