@@ -3,9 +3,8 @@ from langgraph.graph import StateGraph
 
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
-from src.researcher.agents.literature_reviewer.utils.models import EvidenceItem
-from src.researcher.tools.scope_goal import scope_goal
-from src.db.vector_store import VectorStore
+from src.researcher.models import EvidenceItem
+from src.researcher.tools.searcher import Searcher
 from .utils.models import (
     GeneratedHypothesis,
     GenerationOutput,
@@ -55,7 +54,7 @@ class Hypothesizer:
             model=settings.llm_model,
             temperature=settings.llm_temperature
         ))
-        self.vector_store = VectorStore()
+        self.searcher = Searcher()
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -80,43 +79,12 @@ class Hypothesizer:
 
         return graph.compile()
 
-    def _retrieve_evidence(self, research_goal: str) -> List[EvidenceItem]:
-        """
-        Hybrid-retrieve grounding chunks for the goal and normalize them into
-        EvidenceItems. The goal is used as its own semantic query so the vector
-        (semantic) arm runs, not just keyword search.
-
-        Args:
-            research_goal (str): The goal to retrieve context for.
-        Returns:
-            List[EvidenceItem]: Retrieved evidence (empty on failure).
-        """
-        try:
-            results = self.vector_store.retrieve_documents(
-                main_query=research_goal, queries=[research_goal]
-            )
-        except Exception as e:
-            return []
-
-        return [
-            EvidenceItem(
-                source_type="vector_db",
-                chunk_id=r.get("id"),
-                title=r["metadata"].get("title"),
-                url=r["metadata"].get("url"),
-                text=r["text"],
-                paper_id=r["metadata"].get("paper_id"),
-                score=r.get("score"),
-            )
-            for r in results
-        ]
-
     def _base_knowledge_retriever_node(self, state: HypothesizerState) -> Dict[str, Any]:
         """
         Retrieve grounding context for the goal from the vector store. If the
         knowledge base is thin, lazily scope the goal (search + ingest a few
-        papers) and retrieve again. If still empty, generation falls back to the
-        LLM's prior knowledge.
+        papers, no relevance gate) and retrieve again. If still empty, generation
+        falls back to the LLM's prior knowledge.
 
         Args:
             state (HypothesizerState): Graph state.
@@ -124,13 +92,11 @@ class Hypothesizer:
             dict[str, Any]: State update with the gathered evidence.
         """
         goal = state["research_goal"]
-        evidence = self._retrieve_evidence(goal)
+        evidence = self.searcher.retrieve(goal, [goal])
 
         if len(evidence) < THINNESS_THRESHOLD:
             try:
-                print("SCOPING GOAL")
-                scope_goal(goal)
-                evidence = self._retrieve_evidence(goal)
+                evidence = self.searcher.gather(goal, [goal], gate=None)
             except Exception as e:
                 print(e)
 
