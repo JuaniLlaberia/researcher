@@ -21,6 +21,31 @@ Evidence Gathered So Far (may be empty):
 Produce a batch of distinct candidate hypotheses.
 """)
 
+REFINE_HYPOTHESIS_PROMPT = ChatPromptTemplate.from_template("""
+You are a scientific hypothesis editor. A candidate hypothesis was challenged by a critic. Your job is to produce ONE refined hypothesis that addresses the critique while preserving the original scientific intent — not an unrelated new idea.
+
+The refined hypothesis must be:
+- A single, self-contained declarative claim (not a question, topic, or list).
+- Specific: name a concrete mechanism, variable, or expected direction of effect.
+- Testable: phrased so it could be supported or refuted by evidence or an experiment.
+- A genuine improvement on the original that directly responds to the critique (tighten an assumption, resolve a contradiction, add the missing specificity).
+
+Then score the refined hypothesis on each dimension from 0.0 to 1.0:
+- relevance, testability, specificity, plausibility, novelty.
+Use the full range and be honest — the refinement should usually score better than the original, but do not inflate.
+
+Research Goal:
+{research_goal}
+
+Original Hypothesis:
+{hypothesis}
+
+Critic Feedback:
+{feedback}
+
+Return the refined hypothesis and its scores.
+""")
+
 SCORE_HYPOTHESES_PROMPT = ChatPromptTemplate.from_template("""
 You are a critical evaluator of scientific hypotheses. You are given a research goal, optional supporting evidence, and a numbered list of candidate hypotheses. Score each hypothesis honestly and independently — be discerning, not generous.
 

@@ -1,14 +1,7 @@
 from typing import List, Literal
 from pydantic import BaseModel, Field
 
-
-class Finding(BaseModel):
-    """
-    A single factual claim extracted from the literature, with its stance toward the hypothesis.
-    """
-    content: str = Field(..., description="A single, self-contained factual claim drawn from the evidence, stated in one or two sentences. Must be grounded in the retrieved text.")
-    stance: Literal["supports", "contradicts", "neutral"] = Field(..., description="The claim's relationship to the hypothesis: 'supports' if it is evidence for it, 'contradicts' if it is evidence against it, 'neutral' if it is relevant context but neither.")
-    source_paper_id: str | None = Field(None, description="The paper_id of the evidence item this claim came from, for source attribution. Null only if it cannot be tied to a specific paper.",)
+from src.researcher.models import Finding
 
 class QueriesOutput(BaseModel):
     main_query: str = Field(..., description="The single primary search query: a concise, information-dense reformulation of what must be found to test the hypothesis. Used for keyword search and as the rerank anchor.")

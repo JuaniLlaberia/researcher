@@ -22,7 +22,9 @@ Feedback From a Previous Attempt (may be empty on the first try):
 RELEVANCE_GATE_PROMPT = ChatPromptTemplate.from_template("""
 You decide which candidate papers are worth the cost of full ingestion (downloading and processing) for a literature review. You are given each candidate's title and abstract only.
 
-Select the papers whose title and abstract indicate they likely contain evidence bearing on the hypothesis: supporting it, contradicting it, or providing directly relevant context. Be selective: ingestion is expensive, so favor precision over recall and skip papers that are only loosely related, off-topic, or redundant. Selecting none is acceptable.
+Select the papers whose title and abstract indicate they likely contain evidence bearing on the hypothesis: supporting it, contradicting it, or providing directly relevant context. Be selective: ingestion is expensive, so favor precision over recall and skip papers that are only loosely related, off-topic, or redundant.
+
+Crucially, a shared keyword is not relevance. Reject papers from a different problem domain even when they reuse the same vocabulary (e.g. a hypothesis about long-context *text* should reject papers on computer vision, image/video, audio, genomics, or time-series forecasting that merely happen to mention "attention", "hierarchical", "convolution", or "transformer"). When no candidate is squarely on-topic for THIS research goal, prefer returning an empty selection over ingesting the least-bad option — an empty list is the correct answer, not a failure.
 
 Research Goal:
 {research_goal}

@@ -28,3 +28,12 @@ class ScoredHypothesis(BaseModel):
     plausibility: float = Field(..., ge=0, le=1)
     novelty: float = Field(..., ge=0, le=1)
     rationale: str = Field(..., description="One short sentence justifying the scores.")
+
+class RefineOutput(BaseModel):
+    text: str = Field(..., description="The refined hypothesis: a single, self-contained, testable claim that addresses the critique while staying true to the original intent.")
+    relevance: float = Field(..., ge=0, le=1, description="Does the refined hypothesis address the research goal? 1 = directly on-target, 0 = unrelated.")
+    testability: float = Field(..., ge=0, le=1, description="Can it be concretely tested or refuted? 1 = clear falsifiable prediction, 0 = unfalsifiable.")
+    specificity: float = Field(..., ge=0, le=1, description="Does it name a concrete mechanism, variable, or direction of effect? 1 = precise, 0 = vague.")
+    plausibility: float = Field(..., ge=0, le=1, description="Is it consistent with known science and the evidence? 1 = well-grounded, 0 = implausible.")
+    novelty: float = Field(..., ge=0, le=1, description="Is it non-trivial rather than already-obvious? 1 = novel angle, 0 = trivially known.")
+    rationale: str = Field(..., description="One short sentence on what the refinement changed and why.")
