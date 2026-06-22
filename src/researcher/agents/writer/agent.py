@@ -1,10 +1,10 @@
 from typing import TypedDict, List, Dict, Any
 from langgraph.graph import StateGraph
 
-from src.researcher.models import Hypothesis
-from src.researcher.agents.literature_reviewer.utils.models import Finding
+from src.researcher.models import Hypothesis, Finding
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
+from src.core.logging import get_logger
 from .utils.prompts import (
     GENERATE_SUMMARY_PROMPT,
     LITERATURE_ANALYSIS_PROMPT,
@@ -18,7 +18,9 @@ from .utils.models import (
     ReportOutput
 )
 
-class WritterState(TypedDict):
+log = get_logger("writer")
+
+class WriterState(TypedDict):
     research_goal: str
     hypotheses: List[Hypothesis]
     findings: List[Finding]
@@ -31,7 +33,7 @@ class WritterState(TypedDict):
     literature_review: LiteratureAnalysisOutput | None
     report: ReportOutput | None
 
-class Writter:
+class Writer:
     """
     Writing agent. Given the research goal, hypotheses, and extracted findings,
     it produces an executive summary, a themed synthesis of the literature, and a
@@ -39,7 +41,7 @@ class Writter:
     """
     def __init__(self):
         """
-        Initializes the writter agent.
+        Initializes the writer agent.
         """
         self.llm = LLM(config=LLMConfig(
             provider=settings.llm_provider,
@@ -55,7 +57,7 @@ class Writter:
         Returns:
             StateGraph: The compiled LangGraph graph.
         """
-        graph = StateGraph(WritterState)
+        graph = StateGraph(WriterState)
 
         graph.add_node("literature_reviewer", self._literature_reviewer_node)
         graph.add_node("report_generator", self._research_report_generator_node)
@@ -68,13 +70,13 @@ class Writter:
 
         return graph.compile()
 
-    def _literature_reviewer_node(self, state: WritterState) -> Dict[str, Any]:
+    def _literature_reviewer_node(self, state: WriterState) -> Dict[str, Any]:
         """
         Synthesizes the extracted findings into themes, consensus, contradictions
         and gaps. Consumed by the report node as the literature substrate.
 
         Args:
-            state (WritterState): Graph state.
+            state (WriterState): Graph state.
         Returns:
             dict[str, any]: Dictionary containing the properties to update in the global state.
         """
@@ -89,18 +91,20 @@ class Writter:
                 output_schema=LiteratureAnalysisOutput,
             )
             data = result if isinstance(result, LiteratureAnalysisOutput) else LiteratureAnalysisOutput(**result.model_dump())
+            log.info("literature analysis: %d themes", len(data.themes))
             return {"literature_review": data}
 
         except Exception:
+            log.exception("literature analysis failed")
             return {"literature_review": None}
 
-    def _research_report_generator_node(self, state: WritterState) -> Dict[str, Any]:
+    def _research_report_generator_node(self, state: WriterState) -> Dict[str, Any]:
         """
         Generates a final structured report detailing what was explored, what was
         found, and what remains open, drawing on the literature synthesis.
 
         Args:
-            state (WritterState): Graph state.
+            state (WriterState): Graph state.
         Returns:
             dict[str, any]: Dictionary containing the properties to update in the global state.
         """
@@ -119,17 +123,19 @@ class Writter:
             data = result if isinstance(result, ReportOutput) else ReportOutput(**result.model_dump())
             # References are built deterministically, never by the model.
             data.references = state["citations"]
+            log.info("report drafted: %r", data.title)
             return {"report": data}
 
         except Exception:
+            log.exception("report generation failed")
             return {"report": None}
 
-    def _research_summary_generator_node(self, state: WritterState) -> Dict[str, Any]:
+    def _research_summary_generator_node(self, state: WriterState) -> Dict[str, Any]:
         """
         Generates an executive abstract of the finished report.
 
         Args:
-            state (WritterState): Graph state.
+            state (WriterState): Graph state.
         Returns:
             dict[str, any]: Dictionary containing the properties to update in the global state.
         """
@@ -147,9 +153,11 @@ class Writter:
                 output_schema=SummaryOutput,
             )
             data = result if isinstance(result, SummaryOutput) else SummaryOutput(**result.model_dump())
+            log.info("executive summary generated")
             return {"summary": data.summary}
 
         except Exception:
+            log.exception("summary generation failed")
             return {"summary": ""}
 
     @staticmethod
@@ -217,7 +225,7 @@ class Writter:
             findings: List[Finding],
             sources: List[SourceMeta] | None = None) -> ReportOutput | None:
         """
-        Runs the Writter agent.
+        Runs the Writer agent.
 
         Args:
             research_goal (str): The research goal being written up.
@@ -231,7 +239,7 @@ class Writter:
         citations = self._build_citations(findings, sources)
         sources_block = self._format_sources_block(citations)
 
-        initial_state = WritterState(
+        initial_state = WriterState(
             research_goal=research_goal,
             hypotheses=hypotheses,
             findings=findings,
