@@ -19,10 +19,15 @@ class Hypothesis(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     text = Column(String, nullable=False)
     score = Column(Float())
+    falsifiability_score = Column(Float())
     status = Column(Enum(HypothesisStatus), nullable=False)
     research_id = Column(UUID(as_uuid=True), ForeignKey("researchs.id"), nullable=False)
     parent_id = Column(UUID(as_uuid=True), ForeignKey("hypotheses.id"), nullable=True) # Which hypothesis this one was derived from
 
     __table_args__ = (
         CheckConstraint("score >= 0.0 AND score <= 1.0", name="check_score_range"),
+        CheckConstraint(
+            "falsifiability_score >= 0.0 AND falsifiability_score <= 1.0",
+            name="check_falsifiability_score_range",
+        ),
     )
