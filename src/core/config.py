@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Leave empty to auto-detect.
     reranker_device: str = ""
 
+    # --- Logging ---
+    log_level: str = "INFO"
+    # If set, also write a plain (no-color) transcript of the run to this file.
+    log_file: str = ""
+
     @computed_field
     @property
     def database_url_async(self) -> str:
