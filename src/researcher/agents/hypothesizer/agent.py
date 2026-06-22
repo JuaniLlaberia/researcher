@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph
 
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
+from src.core.logging import get_logger
 from src.researcher.models import EvidenceItem
 from src.researcher.tools.searcher import Searcher
 from .utils.models import (
@@ -11,8 +12,13 @@ from .utils.models import (
     HypothesisScore,
     ScoringOutput,
     ScoredHypothesis,
+    RefineOutput,
 )
-from .utils.prompts import HYPOTHESES_GENERATION_PROMPT, SCORE_HYPOTHESES_PROMPT
+from .utils.prompts import (
+    HYPOTHESES_GENERATION_PROMPT,
+    SCORE_HYPOTHESES_PROMPT,
+    REFINE_HYPOTHESIS_PROMPT,
+)
 
 MIN_HYPOTHESES = 4
 MAX_HYPOTHESES = 8
@@ -26,9 +32,11 @@ SCORE_WEIGHTS = {
 }
 
 FILTER_THRESHOLD = 0.5
-TOP_K = 5
+TOP_K = 3
 # Re-scope the goal if fewer than this many chunks retrieved
-THINNESS_THRESHOLD = 3      
+THINNESS_THRESHOLD = 3
+
+log = get_logger("hypothesizer")
 
 class HypothesizerState(TypedDict):
     research_goal: str
@@ -45,16 +53,20 @@ class Hypothesizer:
     generates a batch of candidate hypotheses, scores them on a rubric, and
     returns the filtered, ranked survivors as ScoredHypothesis objects.
     """
-    def __init__(self):
+    def __init__(self, searcher: Searcher | None = None):
         """
         Initializes the Hypothesizer pipeline class.
+
+        Args:
+            searcher (Searcher | None): Shared searcher to reuse (avoids loading a
+                second Docling pipeline / vector store). Self-constructs if omitted.
         """
         self.llm = LLM(config=LLMConfig(
             provider=settings.llm_provider,
             model=settings.llm_model,
             temperature=settings.llm_temperature
         ))
-        self.searcher = Searcher()
+        self.searcher = searcher or Searcher()
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -95,12 +107,13 @@ class Hypothesizer:
         evidence = self.searcher.retrieve(goal, [goal])
 
         if len(evidence) < THINNESS_THRESHOLD:
+            log.info("knowledge base thin (%d chunks) — scoping the goal via search", len(evidence))
             try:
                 evidence = self.searcher.gather(goal, [goal], gate=None)
-            except Exception as e:
-                print(e)
+            except Exception:
+                log.exception("goal scoping failed — falling back to LLM priors")
 
-        print("EVIDENCE", evidence)
+        log.info("base knowledge: %d evidence chunks", len(evidence))
         return {"raw_data": evidence}
 
     def _hypotheses_generator_node(self, state: HypothesizerState) -> Dict[str, Any]:
@@ -122,10 +135,11 @@ class Hypothesizer:
                 output_schema=GenerationOutput,
             )
             data = result if isinstance(result, GenerationOutput) else GenerationOutput(**result.model_dump())
-            print("H1", data)
+            log.info("generated %d raw hypotheses", len(data.hypotheses[:MAX_HYPOTHESES]))
             return {"raw_hypotheses": data.hypotheses[:MAX_HYPOTHESES]}
 
         except Exception:
+            log.exception("hypothesis generation failed")
             return {"raw_hypotheses": []}
 
     def _hypotheses_scorer_node(self, state: HypothesizerState) -> Dict[str, Any]:
@@ -154,10 +168,11 @@ class Hypothesizer:
                 output_schema=ScoringOutput,
             )
             data = result if isinstance(result, ScoringOutput) else ScoringOutput(**result.model_dump())
-            print("H2", data)
+            log.info("scored %d hypotheses", len(data.scores))
             return {"scored_hypotheses": data.scores}
 
         except Exception:
+            log.exception("hypothesis scoring failed")
             return {"scored_hypotheses": []}
 
     def _hypotheses_filter_node(self, state: HypothesizerState) -> Dict[str, Any]:
@@ -195,7 +210,10 @@ class Hypothesizer:
         survivors = [h for h in scored if h.score >= FILTER_THRESHOLD]
         survivors.sort(key=lambda h: h.score, reverse=True)
 
-        return {"hypotheses": survivors[:TOP_K]}
+        kept = survivors[:TOP_K]
+        log.info("filtered: %d/%d above threshold %.2f, keeping top %d",
+                 len(survivors), len(scored), FILTER_THRESHOLD, len(kept))
+        return {"hypotheses": kept}
 
     def run(self, research_goal: str) -> List[ScoredHypothesis]:
         """
@@ -216,3 +234,39 @@ class Hypothesizer:
 
         results = self.graph.invoke(initial_state)
         return results["hypotheses"]
+
+    def refine(self, research_goal: str, hypothesis: str, feedback: str) -> ScoredHypothesis:
+        """
+        Refine a single hypothesis in response to a critique, and re-score it on the
+        same rubric used at generation so the child's confidence is honest (not the
+        parent's stale score). One LLM call; no full graph.
+
+        Args:
+            research_goal (str): The research goal.
+            hypothesis (str): The original hypothesis text being refined.
+            feedback (str): Condensed critic feedback to address.
+        Returns:
+            ScoredHypothesis: The refined hypothesis with its composite score.
+        """
+        result = self.llm.invoke(
+            prompt=REFINE_HYPOTHESIS_PROMPT,
+            input={
+                "research_goal": research_goal,
+                "hypothesis": hypothesis,
+                "feedback": feedback,
+            },
+            output_schema=RefineOutput,
+        )
+        data = result if isinstance(result, RefineOutput) else RefineOutput(**result.model_dump())
+
+        composite = sum(getattr(data, dim) * weight for dim, weight in SCORE_WEIGHTS.items())
+        return ScoredHypothesis(
+            text=data.text,
+            score=composite,
+            relevance=data.relevance,
+            testability=data.testability,
+            specificity=data.specificity,
+            plausibility=data.plausibility,
+            novelty=data.novelty,
+            rationale=data.rationale,
+        )

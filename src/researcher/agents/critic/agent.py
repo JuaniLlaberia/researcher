@@ -4,6 +4,7 @@ from langgraph.types import Command
 
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
+from src.core.logging import get_logger
 from src.researcher.tools.searcher import Searcher
 from src.researcher.models import EvidenceItem
 
@@ -16,6 +17,8 @@ from .utils.prompts import (ADVERSARIAL_QUERIES_GENERATION_PROMPT,
 
 MAX_RETRIES_PER_NODE = 3
 INGEST_CAP = 3
+
+log = get_logger("critic")
 
 class CriticState(TypedDict):
     research_goal: str
@@ -32,16 +35,20 @@ class Critic:
     """
     Critic agent that generates an analysis and verdict of the hypothesis.
     """
-    def __init__(self):
+    def __init__(self, searcher: Searcher | None = None):
         """
         Initializes Critic pipeline class.
+
+        Args:
+            searcher (Searcher | None): Shared searcher to reuse (avoids loading a
+                second Docling pipeline / vector store). Self-constructs if omitted.
         """
         self.llm = LLM(config=LLMConfig(
             provider=settings.llm_provider,
             model=settings.llm_model,
             temperature=settings.llm_temperature
         ))
-        self.searcher = Searcher()
+        self.searcher = searcher or Searcher()
         self.graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
@@ -84,9 +91,11 @@ class Critic:
                 output_schema=AdversarialQueriesOutput,
             )
             data = result if isinstance(result, AdversarialQueriesOutput) else AdversarialQueriesOutput(**result.model_dump())
+            log.info("adversarial queries: %d", len(data.queries))
             return {"queries": data.queries}
-        
+
         except Exception:
+            log.exception("adversarial query generation failed")
             return {"queries": []}
 
     def _queries_validator(self, state: CriticState) -> Command[Literal["literature_searcher", "adv_queries_generator"]]:
@@ -157,6 +166,7 @@ class Critic:
             indices = data.selected_indices
 
         except Exception:
+            log.exception("adversarial relevance gate failed — passing all %d candidates", len(candidates))
             indices = list(range(len(candidates)))
 
         selected = [candidates[i] for i in indices if 0 <= i < len(candidates)]
@@ -184,9 +194,12 @@ class Critic:
                 output_schema=CriticAssessment,
             )
             data = result if isinstance(result, CriticAssessment) else CriticAssessment(**result.model_dump())
+            log.info("assessment: verdict=%s, %d contradictions, %d assumptions",
+                     data.verdict, len(data.contradictions), len(data.assumptions))
             return {"assessment": data}
 
         except Exception:
+            log.exception("hypothesis assessment failed")
             return {"assessment": None}
 
     def run(self, research_goal: str, hypothesis: str) -> CriticAssessment:

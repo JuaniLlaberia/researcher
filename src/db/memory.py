@@ -3,8 +3,11 @@ from langchain_core.messages import BaseMessage
 
 from src.core.config import settings
 from src.core.llm import LLM, LLMConfig
+from src.core.logging import get_logger
 from .utils.prompts import SUMMARY_PROMPT
 from .utils.models import SummaryOutput
+
+log = get_logger("memory")
 
 def generate_summary_memory(crr_summary: str, messages: List[BaseMessage]) -> str:
     """
@@ -16,12 +19,14 @@ def generate_summary_memory(crr_summary: str, messages: List[BaseMessage]) -> st
     Returns:
         str: Generated summary.
     """
+    log.info("summarizing %d messages (prior summary: %s)",
+             len(messages), "yes" if crr_summary else "none")
     llm = LLM(config=LLMConfig(
         provider=settings.llm_provider,
         model=settings.llm_model,
         temperature=settings.llm_temperature
     ))
-    
+
     result = llm.invoke(
         prompt=SUMMARY_PROMPT,
         input={
@@ -31,4 +36,5 @@ def generate_summary_memory(crr_summary: str, messages: List[BaseMessage]) -> st
         output_schema=SummaryOutput
     )
 
-    return result if isinstance(result, SummaryOutput) else SummaryOutput(**result.model_dump())
+    data = result if isinstance(result, SummaryOutput) else SummaryOutput(**result.model_dump())
+    return data.summary

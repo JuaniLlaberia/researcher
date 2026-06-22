@@ -4,6 +4,7 @@ from langgraph.types import Command
 
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
+from src.core.logging import get_logger
 from src.researcher.tools.searcher import Searcher
 from src.researcher.models import EvidenceItem
 from .utils.models import (
@@ -21,7 +22,9 @@ from .utils.prompts import (
 )
 
 MAX_RETRIES_PER_NODE = 3
-INGEST_CAP = 3
+INGEST_CAP = 2
+
+log = get_logger("literature_reviewer")
 
 class LiteratureReviewerState(TypedDict):
     research_goal: str
@@ -41,9 +44,13 @@ class LiteratureReviewer:
     """
     Literature reviewer agent. Given a goal and a hypothesis it find and analyzes the most relevant papers.
     """
-    def __init__(self) -> None:
+    def __init__(self, searcher: Searcher | None = None) -> None:
         """
         Initializes the LiteratureReviwer class.
+
+        Args:
+            searcher (Searcher | None): Shared searcher to reuse (avoids loading a
+                second Docling pipeline / vector store). Self-constructs if omitted.
         """
         self.llm = LLM(config=LLMConfig(
             provider=settings.llm_provider,
@@ -51,7 +58,7 @@ class LiteratureReviewer:
             temperature=settings.llm_temperature,
         ))
 
-        self.searcher = Searcher()
+        self.searcher = searcher or Searcher()
 
         self.graph = self._build_graph()
 
@@ -98,9 +105,11 @@ class LiteratureReviewer:
                 output_schema=QueriesOutput,
             )
             data = result if isinstance(result, QueriesOutput) else QueriesOutput(**result.model_dump())
+            log.info("queries: main=%r + %d variants", data.main_query, len(data.queries))
             return {"main_query": data.main_query, "queries": data.queries}
-        
+
         except Exception:
+            log.exception("query generation failed")
             return {"main_query": "", "queries": []}
 
     def _queries_validator(self, state: LiteratureReviewerState) -> Command[Literal["searcher", "queries_generator"]]:
@@ -174,6 +183,7 @@ class LiteratureReviewer:
             indices = data.selected_indices
 
         except Exception:
+            log.exception("relevance gate failed — passing all %d candidates", len(candidates))
             indices = list(range(len(candidates)))
 
         selected = [candidates[i] for i in indices if 0 <= i < len(candidates)]
@@ -199,9 +209,11 @@ class LiteratureReviewer:
                 output_schema=DataValidatorOutput,
             )
             data = result if isinstance(result, DataValidatorOutput) else DataValidatorOutput(**result.model_dump())
+            log.info("data sufficiency: %s", data.validation_label)
             return {"has_sufficient_data": data.validation_label, "queries_feedback": data.feedback}
-        
+
         except Exception:
+            log.exception("data evaluation failed — treating as insufficient")
             return {
                 "has_sufficient_data": "insufficient",
                 "queries_feedback": "Something went wrong when evaluating the data.",
@@ -248,9 +260,11 @@ class LiteratureReviewer:
                 output_schema=FindingExtractorOutput,
             )
             data = result if isinstance(result, FindingExtractorOutput) else FindingExtractorOutput(**result.model_dump())
+            log.info("extracted %d findings from %d evidence chunks", len(data.findings), len(state["raw_data"]))
             return {"findings": data.findings}
-        
+
         except Exception:
+            log.exception("finding extraction failed")
             return {"findings": []}
 
     def run(self, research_goal: str, hypothesis: str) -> List[Finding]:

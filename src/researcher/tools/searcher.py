@@ -1,5 +1,6 @@
 from typing import Any, Callable, Dict, List, Optional
 
+from src.core.logging import get_logger, log_stage
 from src.researcher.models import EvidenceItem
 from src.db.vector_store import VectorStore
 from .ingest_paper import IngestionPipeline
@@ -8,6 +9,11 @@ from .search_schoolar import search_schoolar
 
 DISCOVERY_VARIANTS = 2
 DEFAULT_INGEST_CAP = 3
+# Max NEW papers ingested per run. Once hit, gather() stops downloading and just
+# retrieves from the corpus already accumulated this run. Bounds worst-case time.
+INGESTION_BUDGET = 15
+
+log = get_logger("searcher")
 
 # A gate decides which discovered candidates are worth ingesting.
 Gate = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
@@ -32,6 +38,16 @@ class Searcher:
         """
         self.ingestion = ingestion or IngestionPipeline()
         self.vector_store = vector_store or self.ingestion.store
+        # New ingestions performed this run; bounded by INGESTION_BUDGET.
+        self._ingested_count = 0
+
+    def reset_ingestion_budget(self) -> None:
+        """
+        Reset the per-run ingestion counter. Called by the orchestrator at the start
+        of each run, since the Searcher is shared and long-lived but the budget is
+        per-run.
+        """
+        self._ingested_count = 0
 
     def gather(
         self,
@@ -54,6 +70,7 @@ class Searcher:
         """
         candidates = self._discover(main_query, queries)
         selected = gate(candidates) if gate else candidates[:ingest_cap]
+        log.info("gather: %d candidates discovered, %d selected for ingestion", len(candidates), len(selected))
         self._ingest_selected(selected)
         return self.retrieve(main_query, queries)
 
@@ -95,7 +112,10 @@ class Searcher:
         try:
             results = self.vector_store.retrieve_documents(main_query=main_query, queries=queries)
         except Exception:
+            log.exception("retrieve failed for %r — returning no evidence", main_query)
             return []
+
+        log.info("retrieve: %d chunks for %r", len(results), main_query)
 
         return [
             EvidenceItem(
@@ -124,14 +144,16 @@ class Searcher:
         candidates: Dict[tuple, Dict[str, Any]] = {}
 
         for term in terms:
-            for tool, kwargs in (
-                (search_arxiv, {"keyword": term, "max_results": 5}),
-                (search_schoolar, {"query": term, "max_results": 5}),
+            for tool, source, kwargs in (
+                (search_arxiv, "arxiv", {"keyword": term, "max_results": 5}),
+                (search_schoolar, "semantic_scholar", {"query": term, "max_results": 5}),
             ):
                 try:
                     results = tool(**kwargs)
                 except Exception:
+                    log.warning("%s search failed for %r", source, term)
                     continue
+                log.debug("%s returned %d results for %r", source, len(results), term)
                 for r in results:
                     key = (r.get("source"), r.get("external_id"))
 
@@ -151,9 +173,14 @@ class Searcher:
         """
         for c in selected:
             source, external_id = c["source"], c["external_id"]
+            title = c.get("title", "")
             try:
                 if self.vector_store.paper_exists(source, external_id):
+                    log.info("skip (already stored): [%s] %s", source, title[:70])
                     continue
+                if self._ingested_count >= INGESTION_BUDGET:
+                    log.info("ingestion budget (%d) reached — retrieving from stored corpus only", INGESTION_BUDGET)
+                    break
                 paper_meta = {
                     "title": c["title"],
                     "source": source,
@@ -162,6 +189,9 @@ class Searcher:
                     "abstract": c.get("summary") or None,
                     "authors": c.get("authors") or [],
                 }
-                self.ingestion.run(url=c["pdf_url"], paper_meta=paper_meta)
+                with log_stage(log, f"ingest [{source}] {title[:60]}"):
+                    self.ingestion.run(url=c["pdf_url"], paper_meta=paper_meta)
+                self._ingested_count += 1
             except Exception:
+                log.exception("ingestion failed: [%s] %s", source, title[:70])
                 continue
