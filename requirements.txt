@@ -1,0 +1,29 @@
+# LLM / embedding providers
+langchain_anthropic
+langchain_openai
+langchain_google_genai
+langchain_ollama
+
+# Database
+sqlalchemy>=2.0
+greenlet
+asyncpg
+psycopg[binary]
+pgvector
+
+# Config
+pydantic-settings
+python-dotenv
+
+# Preprocessing / ingestion
+langchain_text_splitters
+docling
+certifi
+
+# Graphs
+langgraph
+langchain
+
+# Reranking
+torch
+transformers
