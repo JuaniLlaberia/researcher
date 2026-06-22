@@ -1,7 +1,12 @@
+from uuid import uuid4
 from typing import Literal, Dict, Any
+
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import Command, Send
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.types import Command, Send, interrupt
 from langchain_core.messages import HumanMessage, AIMessage
+from psycopg_pool import AsyncConnectionPool
+from psycopg.rows import dict_row
 
 from src.core.llm import LLM, LLMConfig
 from src.core.config import settings
@@ -24,6 +29,7 @@ from src.db.session_store import (
     load_state,
     save_state,
     load_paper_sources,
+    set_pending_thread,
 )
 
 NODE_CLASSIFIER = "intent_classifier"
@@ -35,6 +41,8 @@ NODE_LITERATURE = "literature_reviewer"
 NODE_CRITIC = "critic"
 NODE_CRITIC_JOIN = "critic_join"
 NODE_WRITER = "writer"
+NODE_GATE_HYPOTHESES = "gate_hypotheses"
+NODE_GATE_REPORT = "gate_report"
 NODE_RESPONDER = "responder"
 NODE_SUMMARY_ROUTER = "summary_router"
 NODE_SUMMARIZER = "summarization"
@@ -52,6 +60,16 @@ SUMMARY_EVERY = 12
 CONTEXT_MESSAGES = 10
 REFINE_CAP = 2
 
+GATE_HYPOTHESES = "hypotheses"
+GATE_REFINE = "refine"
+GATE_REPORT = "report"
+
+ARMED_GATES: dict[HumanInTheLoopEnum, set[str]] = {
+    HumanInTheLoopEnum.AUTONOMOUS: set(),
+    HumanInTheLoopEnum.CHECKPOINT: {GATE_HYPOTHESES, GATE_REPORT},
+    HumanInTheLoopEnum.INTERACTIVE: {GATE_HYPOTHESES, GATE_REFINE, GATE_REPORT},
+}
+
 log = get_logger("orchestrator")
 
 def _short(hypothesis: Hypothesis) -> str:
@@ -64,9 +82,16 @@ class Orquestrator:
     specialist (with per-hypothesis fan-out for the literature/critique work),
     funnels every route through a single responder, then persists the turn.
     """
-    def __init__(self):
+    def __init__(self, checkpointer):
         """
         Initializes the orchestrator: shared LLM, hoisted agents, compiled graph.
+
+        Use `await Orquestrator.create()` for normal (Postgres-backed) construction;
+        the checkpointer is injected so tests can pass an in-memory saver.
+
+        Args:
+            checkpointer: A LangGraph checkpointer used to persist in-flight graph
+                state (required for HITL interrupt/resume).
         """
         self.llm = LLM(config=LLMConfig(
             provider=settings.llm_provider,
@@ -74,13 +99,39 @@ class Orquestrator:
             temperature=settings.llm_temperature,
         ))
         self.searcher = Searcher()
-        
+
         self.hypothesizer = Hypothesizer(searcher=self.searcher)
         self.literature_reviewer = LiteratureReviewer(searcher=self.searcher)
         self.critic = Critic(searcher=self.searcher)
         self.writer = Writer()
 
+        self.checkpointer = checkpointer
         self.graph = self._build_graph()
+
+    @classmethod
+    async def create(cls) -> "Orquestrator":
+        """
+        Async factory: open a Postgres-backed checkpointer (creating its tables if
+        needed) and build the orchestrator. The connection pool stays open for the
+        orchestrator's lifetime.
+
+        Returns:
+            Orquestrator: A ready, HITL-capable orchestrator.
+        """
+        pool = AsyncConnectionPool(
+            conninfo=settings.database_dsn,
+            max_size=10,
+            open=False,
+            kwargs={"autocommit": True, "row_factory": dict_row},
+        )
+        await pool.open()
+        saver = AsyncPostgresSaver(pool)
+        await saver.setup()
+        log.info("checkpointer ready (postgres)")
+
+        self = cls(checkpointer=saver)
+        self._pool = pool
+        return self
 
     def _build_graph(self):
         """
@@ -100,6 +151,8 @@ class Orquestrator:
         graph.add_node(NODE_LITERATURE, self._literature_reviewer_node)
         graph.add_node(NODE_CRITIC, self._critic_node)
         graph.add_node(NODE_CRITIC_JOIN, self._critic_join)
+        graph.add_node(NODE_GATE_HYPOTHESES, self._gate_hypotheses_node)
+        graph.add_node(NODE_GATE_REPORT, self._gate_report_node)
         graph.add_node(NODE_WRITER, self._writer_node)
         graph.add_node(NODE_RESPONDER, self._responder_node)
         graph.add_node(NODE_SUMMARY_ROUTER, self._summary_router)
@@ -108,12 +161,12 @@ class Orquestrator:
 
         graph.add_edge(START, NODE_CLASSIFIER)
         graph.add_edge(NODE_CLASSIFIER, NODE_INTENT_ROUTER)
-        graph.add_edge(NODE_HYPOTHESIZER, NODE_HYPOTHESIZER_ROUTER)
+        graph.add_edge(NODE_HYPOTHESIZER, NODE_GATE_HYPOTHESES)
         graph.add_edge(NODE_RESPONDER, NODE_SUMMARY_ROUTER)
         graph.add_edge(NODE_SUMMARIZER, NODE_PERSIST)
         graph.add_edge(NODE_PERSIST, END)
 
-        return graph.compile()
+        return graph.compile(checkpointer=self.checkpointer)
 
     def _branch_payload(self, state: ResearchState, hypothesis: Hypothesis, pipeline: bool) -> Dict[str, Any]:
         """
@@ -229,15 +282,117 @@ class Orquestrator:
         Returns:
             dict[str, Any]: {"hypotheses": [...]}.
         """
+        feedback = state.get("hypotheses_feedback")
         try:
             with log_stage(log, "hypothesis generation"):
-                scored = self.hypothesizer.run(research_goal=state["goal"])
+                scored = self.hypothesizer.run(research_goal=state["goal"], feedback=feedback or "")
             hypotheses = [scored_to_hypothesis(scored=h) for h in scored]
-            log.info("generated %d hypotheses", len(hypotheses))
-            return {"hypotheses": hypotheses}
+            log.info("generated %d hypotheses%s", len(hypotheses), " (with feedback)" if feedback else "")
+
+            return {"hypotheses": hypotheses, "hypotheses_feedback": None}
         except Exception:
             log.exception("hypothesizer node failed — no hypotheses produced")
-            return {"hypotheses": []}
+            return {"hypotheses": [], "hypotheses_feedback": None}
+
+    def _gate_decision(self, state: ResearchState, gate: str, payload: Dict[str, Any]) -> Dict[str, Any] | None:
+        """
+        Pause for human approval at a gate, if that gate is armed for the active
+        hitl_mode. Returns the human's decision dict, or None when the gate is not
+        armed (the caller then proceeds without pausing).
+
+        Args:
+            state (ResearchState): Graph state.
+            gate (str): One of GATE_HYPOTHESES / GATE_REFINE / GATE_REPORT.
+            payload (Dict[str, Any]): JSON-serializable context shown to the human.
+        Returns:
+            Dict[str, Any] | None: {"action": "approve|reject|edit|feedback", "value": ...} or None.
+        """
+        if gate not in ARMED_GATES.get(state["hitl_mode"], set()):
+            return None
+        log.info("HITL gate '%s' armed (%s) — pausing for human", gate, state["hitl_mode"].value)
+        return interrupt({"gate": gate, **payload})
+
+    def _gate_hypotheses_node(self, state: ResearchState) -> Command:
+        """
+        HITL gate after hypothesis generation, before the literature fan-out.
+        approve -> continue; reject -> stop (responder); edit -> apply per-id text/drop
+        updates; feedback -> regenerate additional guided hypotheses.
+
+        Args:
+            state (ResearchState): Graph state.
+        Returns:
+            Command: Next hop, with any hypothesis/feedback updates.
+        """
+        decision = self._gate_decision(state, GATE_HYPOTHESES, {
+            "question": "Review the generated hypotheses before literature review.",
+            "hypotheses": [
+                {"id": h.id, "text": h.text, "confidence": h.confidence, "status": h.status}
+                for h in state["hypotheses"]
+            ],
+        })
+
+        if decision is None or decision.get("action") == "approve":
+            return Command(goto=NODE_HYPOTHESIZER_ROUTER)
+
+        action = decision.get("action")
+        if action == "reject":
+            log.info("HITL: hypotheses rejected → responder")
+            return Command(goto=NODE_RESPONDER, update={"active_agent": NODE_HYPOTHESIZER})
+
+        if action == "edit":
+            # value: [{"id": ..., "text"?: ..., "drop"?: bool}]; updates are same-id so
+            # the merge reducer replaces them. Dropping parks the hypothesis.
+            by_id = {h.id: h for h in state["hypotheses"]}
+            updated = []
+            for e in decision.get("value", []):
+                h = by_id.get(e.get("id"))
+                if h is None:
+                    continue
+                if e.get("drop"):
+                    h.status = "parked"
+                elif e.get("text"):
+                    h.text = e["text"]
+                updated.append(h)
+            log.info("HITL: edited %d hypotheses", len(updated))
+            return Command(goto=NODE_HYPOTHESIZER_ROUTER, update={"hypotheses": updated})
+
+        if action == "feedback":
+            log.info("HITL: feedback → regenerating additional hypotheses")
+            return Command(goto=NODE_HYPOTHESIZER, update={"hypotheses_feedback": decision.get("value", "")})
+
+        return Command(goto=NODE_HYPOTHESIZER_ROUTER)
+
+    def _gate_report_node(self, state: ResearchState) -> Command:
+        """
+        HITL gate after the report is written, before the responder renders it.
+        approve -> render as-is; edit -> render the human's verbatim text; feedback ->
+        rewrite the report with guidance.
+
+        Args:
+            state (ResearchState): Graph state.
+        Returns:
+            Command: Next hop, with any report override / feedback updates.
+        """
+        report = state.get("report")
+        decision = self._gate_decision(state, GATE_REPORT, {
+            "question": "Review the research report before it is finalized.",
+            "title": report.title if report else None,
+            "report": self._render_report(report) if report else "(no report)",
+        })
+
+        if decision is None or decision.get("action") in (None, "approve"):
+            return Command(goto=NODE_RESPONDER)
+
+        action = decision.get("action")
+        if action == "edit":
+            log.info("HITL: report replaced with human edit")
+            return Command(goto=NODE_RESPONDER, update={"report_override": decision.get("value", "")})
+
+        if action == "feedback":
+            log.info("HITL: feedback → rewriting report")
+            return Command(goto=NODE_WRITER, update={"report_feedback": decision.get("value", "")})
+
+        return Command(goto=NODE_RESPONDER)
 
     def _hypothesis_refiner_node(self, payload: Dict[str, Any]) -> Command[Literal["literature_reviewer", "responder"]]:
         """
@@ -286,9 +441,9 @@ class Orquestrator:
         if not self._is_full_pipeline(state):
             return Command(goto=NODE_RESPONDER)
 
-        hypotheses = state["hypotheses"]
+        hypotheses = [h for h in state["hypotheses"] if h.status == "active"]
         if not hypotheses:
-            log.info("no hypotheses to review → responder")
+            log.info("no active hypotheses to review → responder")
             return Command(goto=NODE_RESPONDER)
 
         log.info("fanning out literature review over %d hypotheses", len(hypotheses))
@@ -400,6 +555,15 @@ class Orquestrator:
                     sends.append(Send(NODE_LITERATURE, self._branch_payload(state, h, pipeline=True)))
 
         if sends:
+            decision = self._gate_decision(state, GATE_REFINE, {
+                "question": f"Critic wants another refine round ({len(sends)} hypotheses). Continue?",
+                "round": round,
+                "pending": counts,
+            })
+            if decision is not None and decision.get("action") == "reject":
+                log.info("HITL: refine loop stopped by human → writer")
+                return Command(goto=NODE_WRITER)
+
             log.info("looping back %d hypotheses (round → %d)", len(sends), round + 1)
             return Command(goto=sends, update={"refine_round": round + 1})
 
@@ -418,12 +582,14 @@ class Orquestrator:
         Returns:
             Command: Report update + hand off to the responder.
         """
+        feedback = state.get("report_feedback")
         try:
             paper_ids = list({f.source_paper_id for f in state["findings"] if f.source_paper_id})
             rows = await load_paper_sources(paper_ids)
             sources = [SourceMeta(**row) for row in rows]
-            log.info("writing report: %d hypotheses, %d findings, %d sources",
-                     len(state["hypotheses"]), len(state["findings"]), len(sources))
+            log.info("writing report: %d hypotheses, %d findings, %d sources%s",
+                     len(state["hypotheses"]), len(state["findings"]), len(sources),
+                     " (with feedback)" if feedback else "")
 
             with log_stage(log, "report writing"):
                 report = self.writer.run(
@@ -431,10 +597,11 @@ class Orquestrator:
                     hypotheses=state["hypotheses"],
                     findings=state["findings"],
                     sources=sources,
+                    feedback=feedback or "",
                 )
 
             log.info("report produced: %s", report.title if report else "(none)")
-            return Command(goto=NODE_RESPONDER, update={"report": report, "active_agent": NODE_WRITER})
+            return Command(goto=NODE_GATE_REPORT, update={"report": report, "report_feedback": None, "active_agent": NODE_WRITER})
         except Exception:
             log.exception("writer node failed — skipping to responder")
             return Command(goto=NODE_RESPONDER)
@@ -482,7 +649,11 @@ class Orquestrator:
         """
         try:
             report = state.get("report")
-            if state.get("active_agent") == NODE_WRITER and report is not None:
+            override = state.get("report_override")
+            if state.get("active_agent") == NODE_WRITER and override:
+                log.info("responder: rendering human-edited report")
+                text = override
+            elif state.get("active_agent") == NODE_WRITER and report is not None:
                 log.info("responder: rendering report")
                 text = self._render_report(report)
             else:
@@ -575,7 +746,8 @@ class Orquestrator:
             research_id (str | None): Open a new session on this existing research.
             message (str | None): The user's instruction for this turn.
         Returns:
-            ResearchState: The final state after the turn.
+            dict: A turn result — see `_finish`. Paused turns carry the interrupt
+                payload + thread_id so the caller can collect input and `resume`.
         """
         if goal:
             run_type = RunTypeEnum.NEW_RESEARCH
@@ -594,7 +766,6 @@ class Orquestrator:
         else:
             raise ValueError("Missing 'goal' or 'session_id' or 'research_id'.")
 
-        # Per-run ingestion budget: the Searcher is shared/long-lived, the budget is per-run.
         self.searcher.reset_ingestion_budget()
 
         state["run_type"] = run_type
@@ -604,6 +775,52 @@ class Orquestrator:
             log.info("user message: %r", message)
             state["messages"].append(HumanMessage(content=message))
 
+        thread_id = str(uuid4())
+        sid = state["session_id"]
         with log_stage(log, "turn"):
-            final = await self.graph.ainvoke(state)
-        return final
+            result = await self.graph.ainvoke(state, self._config(thread_id))
+        return await self._finish(result, sid, thread_id)
+
+    async def resume(self, session_id: str, thread_id: str, decision: Dict[str, Any]):
+        """
+        Resume a turn paused at a HITL gate, feeding the human's decision back in.
+
+        Args:
+            session_id (str): The session that owns the paused turn.
+            thread_id (str): The paused turn's thread_id (from the run/resume result).
+            decision (Dict[str, Any]): {"action": "approve|reject|edit|feedback", "value"?: ...}.
+        Returns:
+            dict: A turn result — may be paused again (another gate) or done.
+        """
+        log.info("resuming thread %s with decision %s", thread_id, decision.get("action"))
+        result = await self.graph.ainvoke(Command(resume=decision), self._config(thread_id))
+        return await self._finish(result, session_id, thread_id)
+
+    @staticmethod
+    def _config(thread_id: str) -> Dict[str, Any]:
+        """
+        LangGraph invocation config keyed by thread_id (= one turn's pause/resume).
+        """
+        return {"configurable": {"thread_id": thread_id}}
+
+    async def _finish(self, result: Dict[str, Any], session_id: str, thread_id: str) -> Dict[str, Any]:
+        """
+        Normalize an ainvoke result into a turn result, and track the pending pause on
+        the session so it can be resumed after a restart / from a UI.
+
+        Args:
+            result (Dict[str, Any]): The graph's ainvoke return.
+            session_id (str): Session that owns the turn.
+            thread_id (str): The turn's thread_id.
+        Returns:
+            dict: {"paused": bool, "thread_id", "session_id", "state", "interrupt"?}.
+        """
+        if "__interrupt__" in result:
+            await set_pending_thread(session_id, thread_id)
+            payload = result["__interrupt__"][0].value
+            log.info("turn paused at gate '%s'", payload.get("gate"))
+            return {"paused": True, "thread_id": thread_id, "session_id": session_id,
+                    "interrupt": payload, "state": result}
+
+        await set_pending_thread(session_id, None)
+        return {"paused": False, "thread_id": thread_id, "session_id": session_id, "state": result}

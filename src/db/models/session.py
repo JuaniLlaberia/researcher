@@ -11,5 +11,6 @@ class Session(Base):
     research_id = Column(UUID(as_uuid=True), ForeignKey("researchs.id"), nullable=False)
     summary = Column(String, nullable=True)
     hitl_mode = Column(String, nullable=False, default="checkpoint")
+    pending_thread_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())

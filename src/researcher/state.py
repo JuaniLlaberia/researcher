@@ -24,7 +24,6 @@ class ResearchState(TypedDict):
 
     findings: Annotated[List[Finding], merge_findings]
     ingested_paper_ids: List[str]
-    decision_trail: List[dict]
 
     report: ReportOutput | None  # latest report from the Writer; rendered by the responder, not persisted as a structured row
 
@@ -36,6 +35,10 @@ class ResearchState(TypedDict):
     run_type: RunTypeEnum
     intent: IntentEnum | None
     refine_round: int            # transient: refinement passes taken this run; bounds the critic refine loop
+
+    hypotheses_feedback: str | None
+    report_feedback: str | None
+    report_override: str | None
 
     messages: Annotated[list, add_messages]
     active_agent: str | None

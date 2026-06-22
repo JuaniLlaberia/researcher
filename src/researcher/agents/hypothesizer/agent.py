@@ -40,6 +40,7 @@ log = get_logger("hypothesizer")
 
 class HypothesizerState(TypedDict):
     research_goal: str
+    feedback: str
 
     raw_data: List[EvidenceItem]
 
@@ -131,6 +132,7 @@ class Hypothesizer:
                 input={
                     "research_goal": state["research_goal"],
                     "raw_data": [e.model_dump() for e in state["raw_data"]],
+                    "feedback": state.get("feedback") or "",
                 },
                 output_schema=GenerationOutput,
             )
@@ -215,17 +217,19 @@ class Hypothesizer:
                  len(survivors), len(scored), FILTER_THRESHOLD, len(kept))
         return {"hypotheses": kept}
 
-    def run(self, research_goal: str) -> List[ScoredHypothesis]:
+    def run(self, research_goal: str, feedback: str = "") -> List[ScoredHypothesis]:
         """
         Runs the hypothesizer pipeline, where we generate and evaluate hypotheses based on research goal.
 
         Args:
             research_goal (str): Goal being research it.
+            feedback (str): Optional human steering for (re)generation; "" when absent.
         Returns:
             List[ScoredHypothesis]: The filtered, ranked hypotheses.
         """
         initial_state = HypothesizerState(
             research_goal=research_goal,
+            feedback=feedback,
             raw_data=[],
             raw_hypotheses=[],
             scored_hypotheses=[],

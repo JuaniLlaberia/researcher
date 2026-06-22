@@ -24,6 +24,7 @@ class WriterState(TypedDict):
     research_goal: str
     hypotheses: List[Hypothesis]
     findings: List[Finding]
+    feedback: str
 
     sources: List[SourceMeta]
     citations: List[Citation]
@@ -117,6 +118,7 @@ class Writer:
                     "hypotheses": [h.model_dump() for h in state["hypotheses"]],
                     "literature_review": literature_review.model_dump() if literature_review else {},
                     "sources_block": state["sources_block"],
+                    "feedback": state.get("feedback") or "",
                 },
                 output_schema=ReportOutput,
             )
@@ -223,7 +225,8 @@ class Writer:
             research_goal: str,
             hypotheses: List[Hypothesis],
             findings: List[Finding],
-            sources: List[SourceMeta] | None = None) -> ReportOutput | None:
+            sources: List[SourceMeta] | None = None,
+            feedback: str = "") -> ReportOutput | None:
         """
         Runs the Writer agent.
 
@@ -232,6 +235,7 @@ class Writer:
             hypotheses (List[Hypothesis]): The hypotheses produced during the session.
             findings (List[Finding]): The claims extracted from the literature.
             sources (List[SourceMeta] | None): Paper metadata (title/url) for citations.
+            feedback (str): Optional human steering for a report rewrite; "" when absent.
         Returns:
             ReportOutput | None: The structured report, or None if generation failed.
         """
@@ -243,6 +247,7 @@ class Writer:
             research_goal=research_goal,
             hypotheses=hypotheses,
             findings=findings,
+            feedback=feedback,
             sources=sources,
             citations=citations,
             sources_block=sources_block,

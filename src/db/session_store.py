@@ -42,7 +42,6 @@ def _empty_state(
         hypotheses=hypotheses or [],
         findings=findings or [],
         ingested_paper_ids=ingested_paper_ids or [],
-        decision_trail=[],
         report=None,
         session_id=session_id,
         session_summary=session_summary,
@@ -51,6 +50,9 @@ def _empty_state(
         run_type=None,
         intent=None,
         refine_round=0,
+        hypotheses_feedback=None,
+        report_feedback=None,
+        report_override=None,
         messages=messages or [],
         active_agent=None,
     )
@@ -197,6 +199,22 @@ async def start_session_in_research(research_id: str, hitl_mode: HumanInTheLoopE
         findings=findings,
         ingested_paper_ids=paper_ids,
     )
+
+async def set_pending_thread(session_id: str, thread_id: str | None) -> None:
+    """
+    Record (or clear) the LangGraph thread_id of a turn paused at a HITL gate, so a
+    paused run can be located and resumed after a restart or from a UI.
+
+    Args:
+        session_id (str): The session whose pending pause is being tracked.
+        thread_id (str | None): The paused turn's thread_id, or None to clear it.
+    """
+    async with AsyncSessionLocal() as s:
+        async with s.begin():
+            session = await s.get(Session, UUID(session_id))
+            if session is None:
+                raise ValueError(f"No session with id {session_id}")
+            session.pending_thread_id = thread_id
 
 def _row_to_message(row: Message) -> BaseMessage:
     """

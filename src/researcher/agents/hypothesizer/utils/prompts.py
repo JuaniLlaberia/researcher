@@ -11,9 +11,14 @@ Each hypothesis must be:
 
 Ground your hypotheses in the provided evidence when it is present. When no evidence is provided, rely on established scientific knowledge — but stay concrete and avoid vague generalities.
 Generate between 4 and 8 hypotheses.
-                                                                
+
+If human guidance is provided below, treat it as a priority instruction: steer the batch toward what it asks for (e.g. a particular angle, mechanism, or constraint) and away from what it rejects.
+
 Research Goal:
 {research_goal}
+
+Human Guidance (may be empty):
+{feedback}
 
 Evidence Gathered So Far (may be empty):
 {raw_data}

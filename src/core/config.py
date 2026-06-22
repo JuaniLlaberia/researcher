@@ -78,6 +78,18 @@ class Settings(BaseSettings):
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 
+    @computed_field
+    @property
+    def database_dsn(self) -> str:
+        """
+        Plain psycopg DSN (no SQLAlchemy driver suffix) for the LangGraph
+        AsyncPostgresSaver checkpointer, which connects via psycopg3 directly.
+        """
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

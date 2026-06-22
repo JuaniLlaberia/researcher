@@ -40,8 +40,13 @@ Produce:
 
 Citations: when a statement in key_findings rests on a specific paper, cite it inline with its bracket number, e.g. [1] or [2][3], using the numbering in the Sources list below. Only cite papers that appear in Sources. Do not produce a references list — it is generated separately.
 
+If human revision guidance is provided below, treat it as a priority instruction and revise the report accordingly (tone, emphasis, structure, what to expand or cut), while staying grounded in the same material.
+
 Research Goal:
 {research_goal}
+
+Human Revision Guidance (may be empty):
+{feedback}
 
 Hypotheses (each with text, status, confidence, evidence_for, evidence_against):
 {hypotheses}
